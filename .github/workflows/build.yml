@@ -1,0 +1,41 @@
+name: Build Native Bot APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Скачивание кода
+        uses: actions/checkout@v4
+
+      - name: Установка Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Настройка Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.4'
+
+      - name: Сборка APK
+        run: gradle assembleRelease
+
+      - name: Подготовка чистого APK файла
+        run: cp app/build/outputs/apk/release/app-release.apk food-hunt-bot.apk
+
+      - name: Публикация чистого APK в Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "Готовый Бот v1.0.${{ github.run_number }} (Скачай APK ниже)"
+          files: food-hunt-bot.apk
