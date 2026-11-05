@@ -33,7 +33,7 @@ class BotService : AccessibilityService() {
     private fun showFloatingButton() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         floatButton = Button(this).apply {
-            text = "▶ СТАРТ v3"
+            text = "▶ СТАРТ v4"
             textSize = 13f
             setBackgroundColor(Color.parseColor("#2E7D32"))
             setTextColor(Color.WHITE)
@@ -45,7 +45,7 @@ class BotService : AccessibilityService() {
                     runLoop()
                 } else {
                     handler.removeCallbacksAndMessages(null)
-                    text = "▶ СТАРТ v3"
+                    text = "▶ СТАРТ v4"
                     setBackgroundColor(Color.parseColor("#2E7D32"))
                 }
             }
@@ -88,13 +88,11 @@ class BotService : AccessibilityService() {
                     softBitmap.recycle()
                 }
                 if (isRunning) {
-                    // Интервал 2100 мс полностью убирает системную ошибку скр:3
                     handler.postDelayed({ runLoop() }, 2100)
                 }
             }
 
             override fun onFailure(errorCode: Int) {
-                // Если Android попросил подождать (код 3), тихо ждем 1.5 сек и пробуем снова
                 if (isRunning) {
                     handler.postDelayed({ runLoop() }, 1500)
                 }
@@ -106,32 +104,32 @@ class BotService : AccessibilityService() {
         val w = bmp.width
         val h = bmp.height
 
-        // 1. Точная проверка 5 белых слотов ожидания (высота ~69.2% экрана!)
-        val slotXPercentages = listOf(0.18, 0.34, 0.50, 0.66, 0.82)
-        val slotY = (h * 0.692).toInt()
+        // 1. Точный подсчет пустых белых слотов ожидания
+        // Проверяем верхнюю площадку каждого слота (Y = 67.2%), где у пустого слота чистый белый цвет,
+        // а у занятого слота выступает цветная крышка муравьиного домика!
+        val slotXPercentages = listOf(0.175, 0.338, 0.500, 0.662, 0.825)
         var emptySlots = 0
         for (px in slotXPercentages) {
             val sx = (w * px).toInt()
-            // Проверяем точку чуть ниже центра слота (70.5%), где у занятого слота нет белых цифр
-            val c = bmp.getPixel(sx, (h * 0.705).toInt())
-            if (Color.red(c) > 235 && Color.green(c) > 235 && Color.blue(c) > 235) {
+            val c1 = bmp.getPixel(sx, (h * 0.672).toInt())
+            val c2 = bmp.getPixel(sx, (h * 0.688).toInt())
+            if (isPureWhiteSlot(c1) && isPureWhiteSlot(c2)) {
                 emptySlots++
             }
         }
 
-        // Оставляем минимум 1 слот про запас, чтобы не забить все 5 слотов
-        if (emptySlots <= 1) {
-            updateStatus("Слоты: $emptySlots/5")
+        if (emptySlots == 0) {
+            updateStatus("Слоты: 0/5")
             return
         }
 
-        // 2. Собираем пиксели ВНЕШНЕГО КОНТУРА рисунка (X: 12%..88%, Y: 18%..47%)
+        // 2. Сканируем ВНЕШНИЙ КОНТУР рисунка на доске (X: 12%..88%, Y: 17%..46%)
         val frontierPixels = mutableListOf<Int>()
         val allBoardPixels = mutableListOf<Int>()
         val minX = (w * 0.12).toInt()
         val maxX = (w * 0.88).toInt()
-        val minY = (h * 0.18).toInt()
-        val maxY = (h * 0.47).toInt()
+        val minY = (h * 0.17).toInt()
+        val maxY = (h * 0.46).toInt()
         val step = 5
 
         for (y in minY until maxY step step) {
@@ -156,68 +154,99 @@ class BotService : AccessibilityService() {
             return
         }
 
-        // 3. Считываем цвета 3 верхних активных кнопок очереди (X: 34%, 50%, 66%, центр Y: 77.5%)
-        val colXPercentages = listOf(0.34, 0.50, 0.66)
+        // 3. АВТО-ПОИСК КНОПОК (1, 2, 3 или 4 колонки в активном верхнем ряду Y = 77.5%)
+        val detectedButtons = detectActiveRowButtons(bmp, w, h)
+        if (detectedButtons.isEmpty()) {
+            updateStatus("Нет кнопок")
+            return
+        }
+
         val activeRowTapY = (h * 0.775).toFloat()
+        var bestBtnX = -1f
+        var bestFrontierMatches = -1
+        var bestTotalScore = -1
 
-        var bestColIndex = -1
-        var maxScore = -1
-
-        for (i in colXPercentages.indices) {
-            val colX = (w * colXPercentages[i]).toInt()
-            val btnColor = sampleButtonColor(bmp, colX, h) ?: continue
-
-            var score = 0
-            // Главный приоритет — цвета на внешнем контуре рисунка, доступные муравьям прямо сейчас
+        for ((btnX, btnColor) in detectedButtons) {
+            var frontierMatches = 0
             for (fp in frontierPixels) {
-                if (colorDistance(btnColor, fp) < 68.0) {
-                    score += 15
+                if (colorDistance(btnColor, fp) < 62.0) {
+                    frontierMatches++
                 }
             }
-            // Вторичный приоритет — присутствие цвета на поле
+            var boardMatches = 0
             for (ap in allBoardPixels) {
-                if (colorDistance(btnColor, ap) < 60.0) {
-                    score += 1
+                if (colorDistance(btnColor, ap) < 58.0) {
+                    boardMatches++
                 }
             }
 
-            if (score > maxScore) {
-                maxScore = score
-                bestColIndex = i
+            val totalScore = frontierMatches * 25 + boardMatches
+            if (totalScore > bestTotalScore) {
+                bestTotalScore = totalScore
+                bestFrontierMatches = frontierMatches
+                bestBtnX = btnX.toFloat()
             }
         }
 
-        if (bestColIndex != -1 && maxScore > 0) {
-            val tapX = (w * colXPercentages[bestColIndex]).toFloat()
-            updateStatus("Бью Кол ${bestColIndex + 1} (Сл:$emptySlots)")
-            tap(tapX, activeRowTapY)
+        // 4. Умное решение о клике:
+        // - Если цвет есть прямо на внешнем контуре (bestFrontierMatches >= 2), бьем даже при 1 свободном слоте!
+        // - Если цвет закрыт внутри, бьем только когда свободно >= 2 слотов.
+        if (bestBtnX > 0 && (bestFrontierMatches >= 2 || (emptySlots >= 2 && bestTotalScore > 0))) {
+            updateStatus("Клик! (Сл:$emptySlots Кн:${detectedButtons.size})")
+            tap(bestBtnX, activeRowTapY)
         } else {
-            updateStatus("Жду контур")
+            updateStatus("Жду (Сл:$emptySlots)")
         }
     }
 
-    // Берем пробу цвета в верхних и нижних уголках кнопки (мимо цифр в центре), включая БЕЛЫЕ кнопки!
-    private fun sampleButtonColor(bmp: Bitmap, centerX: Int, h: Int): Int? {
-        // Высота 75.2% и 79.8% — чистое тело кнопки выше и ниже цифр
-        val sampleYs = listOf((h * 0.752).toInt(), (h * 0.798).toInt())
+    // Автоматически находит центры X и цвета всех кнопок в верхнем ряду (независимо от того, 2 их или 3)
+    private fun detectActiveRowButtons(bmp: Bitmap, w: Int, h: Int): List<Pair<Int, Int>> {
+        val yTop = (h * 0.752).toInt()
+        val yBot = (h * 0.798).toInt()
+        val nonWoodColumns = BooleanArray(w)
+
+        for (x in (w * 0.12).toInt() until (w * 0.88).toInt()) {
+            val p1 = bmp.getPixel(x, yTop)
+            val p2 = bmp.getPixel(x, yBot)
+            if (!isWoodTable(p1) || !isWoodTable(p2)) {
+                nonWoodColumns[x] = true
+            }
+        }
+
+        // Группируем подряд идущие пиксели в отдельные кнопки
+        val results = mutableListOf<Pair<Int, Int>>()
+        var startX = -1
+        for (x in (w * 0.12).toInt() until (w * 0.88).toInt()) {
+            if (nonWoodColumns[x]) {
+                if (startX == -1) startX = x
+            } else {
+                if (startX != -1) {
+                    val width = x - startX
+                    if (width > (w * 0.07).toInt()) { // Ширина настоящей кнопки > 7% экрана
+                        val centerX = (startX + x) / 2
+                        val color = sampleButtonBodyColor(bmp, centerX, yTop, yBot)
+                        if (color != null) results.add(Pair(centerX, color))
+                    }
+                    startX = -1
+                }
+            }
+        }
+        return results
+    }
+
+    private fun sampleButtonBodyColor(bmp: Bitmap, centerX: Int, yTop: Int, yBot: Int): Int? {
         var rSum = 0
         var gSum = 0
         var bSum = 0
         var count = 0
 
-        for (y in sampleYs) {
-            for (dx in listOf(-24, -12, 12, 24)) {
+        for (y in listOf(yTop, yBot)) {
+            for (dx in listOf(-20, -10, 0, 10, 20)) {
                 val p = bmp.getPixel(centerX + dx, y)
-                val r = Color.red(p)
-                val g = Color.green(p)
-                val b = Color.blue(p)
-
-                // Отсекаем только бежевый деревянный стол (если колонка закончилась)
-                if (r in 205..248 && g in 165..218 && b in 125..182 && (r - b) > 35) continue
-
-                rSum += r
-                gSum += g
-                bSum += b
+                if (isWoodTable(p)) continue
+                rSum += Color.red(p)
+                gSum += Color.green(p)
+                bSum += Color.blue(p)
                 count++
             }
         }
@@ -225,7 +254,17 @@ class BotService : AccessibilityService() {
         return Color.rgb(rSum / count, gSum / count, bSum / count)
     }
 
-    // Фон доски — бежево-серый RGB(~235, 224, 216). Чисто белые пиксели птички (RGB > 248) НЕ считаются фоном!
+    private fun isPureWhiteSlot(pixel: Int): Boolean {
+        return Color.red(pixel) > 240 && Color.green(pixel) > 240 && Color.blue(pixel) > 240
+    }
+
+    private fun isWoodTable(pixel: Int): Boolean {
+        val r = Color.red(pixel)
+        val g = Color.green(pixel)
+        val b = Color.blue(pixel)
+        return r in 205..248 && g in 165..220 && b in 125..185 && (r - b) > 35
+    }
+
     private fun isBoardBackground(pixel: Int): Boolean {
         val r = Color.red(pixel)
         val g = Color.green(pixel)
